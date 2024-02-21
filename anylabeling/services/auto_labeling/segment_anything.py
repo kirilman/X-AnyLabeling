@@ -19,6 +19,8 @@ from .types import AutoLabelingResult
 from .sam_onnx import SegmentAnythingONNX
 from .__base__.clip import ChineseClipONNX
 
+from segment_anything import sam_model_registry, SamAutomaticMaskGenerator
+
 
 class SegmentAnything(Model):
     """Segmentation model using SegmentAnything"""
@@ -316,3 +318,112 @@ class SegmentAnything(Model):
                 self.pre_inference_worker.run
             )
             self.pre_inference_thread.start()
+
+
+class SegmentAnythingAll(Model):
+    def __init__(self, config_path, on_message) -> None:
+        super().__init__(config_path, on_message)
+        # self.input_size = self.config["input_size"]
+        self.input_size = (684, 1024)
+        self.max_width = self.config["max_width"]
+        self.max_height = self.config["max_height"]
+        sam = sam_model_registry[self.config["model_type"]](
+            checkpoint=self.config["model_path"]
+        )
+        sam.to("cuda")
+        self.model = SamAutomaticMaskGenerator(
+            model=sam,
+            pred_iou_thresh=0.95,
+            points_per_side=48,
+            # pred_iou_thresh=0.9,
+            stability_score_thresh=0.9,
+            # crop_n_layers=1,
+            crop_overlap_ratio=0.9,
+            # crop_n_points_downscale_factor=2,
+            # min_mask_region_area=20000,  # Requires open-cv to run post-processing
+        )
+        print("create model")
+
+    def predict_shapes(self, image, filename=None) -> AutoLabelingResult:
+        """
+        Predict shapes from image
+        """
+        cv_image = qt_img_to_rgb_cv_img(image, filename)
+
+        original_size = cv_image.shape[:2]
+        # Calculate a transformation matrix to convert to self.input_size
+        # scale_x = self.input_size[1] / cv_image.shape[1]
+        # scale_y = self.input_size[0] / cv_image.shape[0]
+        # scale = min(scale_x, scale_y)
+
+        scale_x = self.input_size[0] / cv_image.shape[0]
+        scale_y = self.input_size[1] / cv_image.shape[1]
+        scale = min(scale_x, scale_y)
+
+        transform_matrix = np.array(
+            [
+                [scale, 0, 0],
+                [0, scale, 0],
+                [0, 0, 1],
+            ]
+        )
+        print(cv_image.shape, scale, scale_x, scale_y)
+        cv_image = cv2.warpAffine(
+            cv_image,
+            transform_matrix[:2],
+            (self.input_size[1], self.input_size[0]),
+            flags=cv2.INTER_LINEAR,
+        )
+        cv2.imwrite("test.jpeg", cv_image)
+        print(cv_image.shape)
+        masks = self.model.generate(cv_image)
+        print("Polygons", len(masks))
+        shapes = self.post_process(masks, scale)
+        result = AutoLabelingResult(shapes, replace=False)
+        return result
+
+    def unload(self):
+        self.stop_inference = True
+        del self.model
+
+    def post_process(self, masks, scale):
+        areas = np.array([x["area"] for x in masks])
+        area_tresh = np.quantile(areas, 0.025)
+        print("порог ", area_tresh)
+        masks = [x for x in masks if x["area"] > area_tresh]
+        shapes = []
+        for mask in masks:
+            mask = mask["segmentation"]
+            image_area = mask.shape[0] * mask.shape[1]
+            mask[mask > 0.0] = 255
+            mask[mask <= 0.0] = 0
+            mask = mask.astype(np.uint8)
+            contours, _ = cv2.findContours(
+                mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE
+            )
+
+            approx_contours = []
+            # Approximate contour
+            epsilon = 0.002 * cv2.arcLength(contours[0], True)
+            approx = cv2.approxPolyDP(contours[0], epsilon, True)
+            # Remove too big contours ( >90% of image size)
+            if cv2.contourArea(approx) > image_area * 0.6:
+                print(cv2.contourArea(approx), image_area)
+                continue
+
+            points = approx.reshape(-1, 2) / scale
+            # Create shape
+            shape = Shape(flags={})
+            for point in points:
+                point[0] = int(point[0])
+                point[1] = int(point[1])
+                shape.add_point(QtCore.QPointF(point[0], point[1]))
+            shape.shape_type = "polygon"
+            shape.closed = True
+            shape.fill_color = "#0FA90A"
+            shape.line_color = "#a90a0a"
+            shape.line_width = 8
+            shape.label = "stone"
+            shape.selected = False
+            shapes.append(shape)
+        return shapes

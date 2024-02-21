@@ -176,3 +176,7 @@
   config_file: ":/yolox_l_dwpose_ucoco.yaml"
 - model_name: "yolox_s-r20230520"
   config_file: ":/yolox_s.yaml"
+- model_name: "segment_anything_vit_b_all"
+  config_file: ":/segment_anything_vit_b_all.yaml"
+- model_name: "segment_anything_vit_l_all"
+  config_file: ":/segment_anything_vit_l_all.yaml"

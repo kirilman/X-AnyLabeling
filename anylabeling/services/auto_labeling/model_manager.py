@@ -166,6 +166,7 @@ class ModelManager(QObject):
             or model_config["type"]
             not in [
                 "segment_anything",
+                "segment_anything_all",
                 "sam_med2d",
                 "sam_hq",
                 "yolov5",
@@ -1187,6 +1188,26 @@ class ModelManager(QObject):
                 model_config["model"] = DepthAnything(
                     model_config, on_message=self.new_model_status.emit
                 )
+                self.auto_segmentation_model_unselected.emit()
+            except Exception as e:  # noqa
+                self.new_model_status.emit(
+                    self.tr(
+                        "Error in loading model: {error_message}".format(
+                            error_message=str(e)
+                        )
+                    )
+                )
+                print(
+                    "Error in loading model: {error_message}".format(
+                        error_message=str(e)
+                    )
+                )
+                return
+        elif model_config["type"] == "segment_anything_all":
+            from .segment_anything  import SegmentAnythingAll
+
+            try:
+                model_config["model"] = SegmentAnythingAll(model_config, on_message=self.new_model_status.emit)
                 self.auto_segmentation_model_unselected.emit()
             except Exception as e:  # noqa
                 self.new_model_status.emit(
