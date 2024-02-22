@@ -3,6 +3,8 @@ import math
 
 from PyQt5 import QtCore, QtGui
 
+from anylabeling.views.labeling.utils.shape import max_distance
+import numpy as np
 from . import utils
 
 # TODO(unknown):
@@ -370,3 +372,10 @@ class Shape:
 
     def __setitem__(self, key, value):
         self.points[key] = value
+        
+    @property
+    def maxsize(self):
+        x = np.array([p.x() for p in self.points])
+        y = np.array([p.y() for p in self.points])
+        return max_distance(x,y)
+

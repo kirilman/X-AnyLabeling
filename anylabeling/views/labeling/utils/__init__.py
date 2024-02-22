@@ -27,4 +27,5 @@ from .shape import (
     shape_to_mask,
     shapes_to_label,
     rectangle_from_diagonal,
+    max_distance
 )

@@ -119,3 +119,10 @@ def rectangle_from_diagonal(diagonal_vertices):
     ]
 
     return rectangle_vertices
+
+
+def max_distance(x_coords, y_coords):
+    r = (x_coords[:, np.newaxis] - x_coords) ** 2 + (
+        y_coords[:, np.newaxis] - y_coords
+    ) ** 2
+    return np.sqrt(r.max())

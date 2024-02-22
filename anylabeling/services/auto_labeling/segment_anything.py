@@ -343,6 +343,16 @@ class SegmentAnythingAll(Model):
             # min_mask_region_area=20000,  # Requires open-cv to run post-processing
         )
         print("create model")
+    
+    def to4image(self, image):
+        h, w, c = image.shape
+        dy = int(h / 2)
+        dx = int(w / 2)
+        parts = {'0': {'image': image[:dy, :dx], 'dx':  0, 'dy': 0},
+                 '1': {'image': image[:dy, dx:], 'dx': dx, 'dy': 0},
+                 '2': {'image': image[dy:, :dx], 'dx': 0,  'dy': dy},
+                 '3': {'image': image[dy:, dx:], 'dx': dx, 'dy': dy}}
+        return parts
 
     def predict_shapes(self, image, filename=None) -> AutoLabelingResult:
         """
@@ -356,29 +366,28 @@ class SegmentAnythingAll(Model):
         # scale_y = self.input_size[0] / cv_image.shape[0]
         # scale = min(scale_x, scale_y)
 
-        scale_x = self.input_size[0] / cv_image.shape[0]
-        scale_y = self.input_size[1] / cv_image.shape[1]
-        scale = min(scale_x, scale_y)
+        shapes = []
+        parhs = self.to4image(cv_image)
+        for name, path in parhs.items():
+            cur_image = path['image']
+            print(cur_image.shape)
+            scale_x = self.input_size[0] / cur_image.shape[0]
+            scale_y = self.input_size[1] / cur_image.shape[1]
+            scale = min(scale_x, scale_y)
 
-        transform_matrix = np.array(
-            [
-                [scale, 0, 0],
-                [0, scale, 0],
-                [0, 0, 1],
-            ]
-        )
-        print(cv_image.shape, scale, scale_x, scale_y)
-        cv_image = cv2.warpAffine(
-            cv_image,
-            transform_matrix[:2],
-            (self.input_size[1], self.input_size[0]),
-            flags=cv2.INTER_LINEAR,
-        )
-        cv2.imwrite("test.jpeg", cv_image)
-        print(cv_image.shape)
-        masks = self.model.generate(cv_image)
-        print("Polygons", len(masks))
-        shapes = self.post_process(masks, scale)
+            transform_matrix = np.array(
+                [[scale, 0, 0],
+                 [0, scale, 0],
+                 [0, 0, 1],])
+            
+            cur_image = cv2.warpAffine(cur_image, transform_matrix[:2], (self.input_size[1], self.input_size[0]), flags=cv2.INTER_LINEAR,)
+            masks = self.model.generate(cur_image)
+            cv2.imwrite("test.jpeg", cur_image)
+            shape = self.post_process(masks, scale, path['dx'], path['dy'])
+            filtered = self.filter_shapes(shape)
+            shapes = shapes + filtered
+
+        print("Polygons", len(shapes))
         result = AutoLabelingResult(shapes, replace=False)
         return result
 
@@ -386,7 +395,15 @@ class SegmentAnythingAll(Model):
         self.stop_inference = True
         del self.model
 
-    def post_process(self, masks, scale):
+    def filter_shapes(self, shapes):
+        rs = np.array([s.maxsize for s in shapes])
+        q_min = np.quantile(rs, 0.02)
+        q_max = np.quantile(rs, 0.98)
+        filtered = [s for s in shapes if q_min < s.maxsize < q_max and len(s.points) > 5]
+        return filtered
+
+
+    def post_process(self, masks, scale, dx, dy):
         areas = np.array([x["area"] for x in masks])
         area_tresh = np.quantile(areas, 0.025)
         print("порог ", area_tresh)
@@ -410,8 +427,10 @@ class SegmentAnythingAll(Model):
             if cv2.contourArea(approx) > image_area * 0.6:
                 print(cv2.contourArea(approx), image_area)
                 continue
-
+            
             points = approx.reshape(-1, 2) / scale
+            points[:,0] += dx
+            points[:,1] += dy
             # Create shape
             shape = Shape(flags={})
             for point in points:

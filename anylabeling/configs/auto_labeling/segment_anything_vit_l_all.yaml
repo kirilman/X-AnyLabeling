@@ -1,0 +1,8 @@
+type: segment_anything_all
+name: segment_anything_vit_l-r20230810
+display_name: Segment Anything (ViT-Large) All
+model_path: /media/kirilman/Z/dataset/SAM/sam_vit_l_0b3195.pth
+model_type: vit_l
+input_size: 1024
+max_width: 1024
+max_height: 682

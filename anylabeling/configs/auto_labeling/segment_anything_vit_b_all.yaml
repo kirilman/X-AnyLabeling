@@ -1,0 +1,8 @@
+type: segment_anything_all
+name: segment_anything_vit_b-r20230810
+display_name: Segment Anything (ViT-Base) All
+model_path: /home/kirilman/Project/sam/_sam/nuclio/sam_vit_b_01ec64.pth
+model_type: vit_b
+input_size: 1024
+max_width: 1024
+max_height: 682
