@@ -1,3 +1,4 @@
+import enum
 import logging
 import os
 import traceback
@@ -17,6 +18,7 @@ from anylabeling.views.labeling.utils.shape import (
     ellipse_parameters,
     Polygone,
     distance_point,
+    add_points_to_polygone,
 )
 from .lru_cache import LRUCache
 from .model import Model
@@ -25,9 +27,9 @@ from .sam_onnx import SegmentAnythingONNX
 from .__base__.clip import ChineseClipONNX
 
 from segment_anything import sam_model_registry, SamAutomaticMaskGenerator
-from asbestutills.utils.geometry import add_points_to_polygone
 from shapely import Polygon as ShapelyPolygone
 import polygone_nms
+import time
 
 
 class SegmentAnything(Model):
@@ -344,7 +346,7 @@ class SegmentAnythingAll(Model):
             pred_iou_thresh=0.5,
             points_per_side=32,
             # pred_iou_thresh=0.9,
-            stability_score_thresh=0.92,
+            stability_score_thresh=0.96,
             # crop_n_layers=1,
             crop_overlap_ratio=0.9,
             # crop_n_points_downscale_factor=2,
@@ -356,11 +358,28 @@ class SegmentAnythingAll(Model):
         h, w, c = image.shape
         dy = int(h / 2)
         dx = int(w / 2)
+        shift = 0
         parts = {
-            "0": {"image": image[:dy, :dx], "dx": 0, "dy": 0},
-            "1": {"image": image[:dy, dx:], "dx": dx, "dy": 0},
-            "2": {"image": image[dy:, :dx], "dx": 0, "dy": dy},
-            "3": {"image": image[dy:, dx:], "dx": dx, "dy": dy},
+            "0": {
+                "image": image[: dy + shift, : dx + shift],
+                "dx": 0,
+                "dy": 0,
+            },
+            "1": {
+                "image": image[: dy + shift, dx - shift :],
+                "dx": dx - shift,
+                "dy": 0,
+            },
+            "2": {
+                "image": image[dy - shift :, : dx + shift],
+                "dx": 0,
+                "dy": dy - shift,
+            },
+            "3": {
+                "image": image[dy - shift :, dx - shift :],
+                "dx": dx - shift,
+                "dy": dy - shift,
+            },
         }
         return parts
 
@@ -378,7 +397,9 @@ class SegmentAnythingAll(Model):
 
         shapes = []
         parhs = self.to4image(cv_image)
+
         for name, path in parhs.items():
+            s_time = time.time()
             cur_image = path["image"]
             print(cur_image.shape)
             scale_x = self.input_size[0] / cur_image.shape[0]
@@ -404,7 +425,7 @@ class SegmentAnythingAll(Model):
             shape = self.post_process(masks, scale, path["dx"], path["dy"])
             filtered = self.filter_shapes(shape)
             shapes = shapes + filtered
-
+            print("dt = ", time.time() - s_time)
         print("Polygons", len(shapes))
         result = AutoLabelingResult(shapes, replace=False)
         return result
@@ -414,42 +435,42 @@ class SegmentAnythingAll(Model):
         del self.model
 
     def filter_shapes(self, shapes):
-        rs = np.array([s.maxsize for s in shapes])
-        q_min = np.quantile(rs, 0.06)
-        q_max = np.quantile(rs, 0.96)
-        filtered = [
-            s
-            for s in shapes
-            if q_min < s.maxsize < q_max and len(s.points) > 5
-        ]
+        # rs = np.array([s.maxsize for s in shapes])
+        # q_min = np.quantile(rs, 0.06)
+        # q_max = np.quantile(rs, 0.96)
+        # filtered = [
+        #     s
+        #     for s in shapes
+        #     if q_min < s.maxsize < q_max and len(s.points) > 5
+        # ]
 
-        if len(shapes) > 100:
+        if len(shapes) > 30:
             polygones = []
             for shape in shapes:
-                xx = [p.x() for p in shape.points]
-                yy = [p.y() for p in shape.points]
-                polygones.append(Polygone(xx, yy))
+                # xx = [p.x() for p in shape['x']]
+                # yy = [p.y() for p in shape['y']]
+                polygones.append(Polygone(shape["x"], shape["y"]))
 
-            t = np.linspace(0, 2 * np.pi, 70)
-            diff_vars = []
-            for p in polygones:
-                try:
-                    if len(p.x) < 10:
-                        continue
-                    xc, yc, a, b, theta = ellipse_parameters(p.x, p.y)
-                    x_ell = xc + a * np.cos(t)
-                    y_ell = yc + b * np.sin(t)
-                    dists = []
-                    for xn, yn in zip(x_ell, y_ell):
-                        neighbour = neighbour_point((xn, yn), p.x, p.y)
-                        dists.append(distance_point((xn, yn), neighbour))
-                    diff_vars.append(np.var(dists))
-                except:
-                    diff_vars.append(0)
+            # t = np.linspace(0, 2 * np.pi, 70)
+            # diff_vars = []
+            # for p in polygones:
+            #     try:
+            #         if len(p.x) < 10:
+            #             continue
+            #         xc, yc, a, b, theta = ellipse_parameters(p.x, p.y)
+            #         x_ell = xc + a * np.cos(t)
+            #         y_ell = yc + b * np.sin(t)
+            #         dists = []
+            #         for xn, yn in zip(x_ell, y_ell):
+            #             neighbour = neighbour_point((xn, yn), p.x, p.y)
+            #             dists.append(distance_point((xn, yn), neighbour))
+            #         diff_vars.append(np.var(dists))
+            #     except:
+            #         diff_vars.append(0)
 
-            thresh = np.quantile(diff_vars, 0.92)
+            # thresh = np.quantile(diff_vars, 0.92)
 
-            max_points = max([2 * len(shape.points) for shape in shapes])
+            max_points = max([2 * len(shape["x"]) for shape in shapes])
             ans_polygones = []
             for p in polygones:
                 if len(p.x) > 6:
@@ -483,17 +504,38 @@ class SegmentAnythingAll(Model):
                         ans[-1] = 0.99
                         ans[-2] = 1.0
                         polys.append(ans)
-
+            print("start nms")
             polys = np.array(polys)
             indexs = polygone_nms.nms(
                 polys,
                 thresh=0.8,
             )
-
-            filtered = [
-                s for i, s in enumerate(shapes) if diff_vars[i] < thresh
-            ]
-
+            ans_shapes = []
+            for k, poly in enumerate(shapes):
+                if k in indexs:
+                    # Create shape
+                    shape = Shape(flags={})
+                    for x, y in zip(poly["x"], poly["y"]):
+                        shape.add_point(QtCore.QPointF(int(x), int(y)))
+                    shape.shape_type = "polygon"
+                    shape.closed = True
+                    shape.fill_color = "#0FA90A"
+                    shape.line_color = "#a90a0a"
+                    shape.line_width = 8
+                    shape.label = "stone"
+                    shape.selected = False
+                    ans_shapes.append(shape)
+            # filtered = [
+            #     s for i, s in enumerate(shapes) if diff_vars[i] < thresh
+            # ]
+        rs = np.array([s.maxsize for s in ans_shapes])
+        q_min = np.quantile(rs, 0.06)
+        q_max = np.quantile(rs, 0.965)
+        filtered = [
+            s
+            for s in ans_shapes
+            if q_min < s.maxsize < q_max and len(s.points) > 5
+        ]
         return filtered
 
     def post_process(self, masks, scale, dx, dy):
@@ -525,19 +567,19 @@ class SegmentAnythingAll(Model):
             points[:, 0] += dx
             points[:, 1] += dy
             # Create shape
-            shape = Shape(flags={})
-            for point in points:
-                point[0] = int(point[0])
-                point[1] = int(point[1])
-                shape.add_point(QtCore.QPointF(point[0], point[1]))
-            shape.shape_type = "polygon"
-            shape.closed = True
-            shape.fill_color = "#0FA90A"
-            shape.line_color = "#a90a0a"
-            shape.line_width = 8
-            shape.label = "stone"
-            shape.selected = False
-            shapes.append(shape)
+            # shape = Shape(flags={})
+            # for point in points:
+            #     point[0] = int(point[0])
+            #     point[1] = int(point[1])
+            #     shape.add_point(QtCore.QPointF(point[0], point[1]))
+            # shape.shape_type = "polygon"
+            # shape.closed = True
+            # shape.fill_color = "#0FA90A"
+            # shape.line_color = "#a90a0a"
+            # shape.line_width = 8
+            # shape.label = "stone"
+            # shape.selected = False
+            shapes.append({"x": points[:, 0], "y": points[:, 1]})
         return shapes
 
     def merge_parths(self):

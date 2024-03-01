@@ -31,5 +31,6 @@ from .shape import (
     distance_point,
     neighbour_point,
     ellipse_parameters,
-    Polygone
+    Polygone,
+    add_points_to_polygone
 )

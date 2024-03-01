@@ -167,3 +167,27 @@ def ellipse_parameters(x, y):
     ell = EllipseModel()
     ell.estimate(a_points)
     return ell.params
+
+def maxdistance_beetwen_points(xx, yy):
+    p1, p2 = (xx[0], yy[0]), (xx[1], yy[1])
+    max_ro = -(10**6)
+    for k, (x1, y1, x2, y2) in enumerate(zip(xx[:-1], yy[:-1], xx[1:], yy[1:])):
+        d = distance_point((x1, y1), (x2, y2))
+
+        if d > max_ro:
+            max_ro = d
+            p1 = (x1, y1)
+            p2 = (x2, y2)
+            index = k
+    return max_ro, p1, p2, index
+
+
+def add_points_to_polygone(xx, yy, N):
+    start_len = len(xx)
+    for i in range(0, N):
+        ro, p1, p2, index = maxdistance_beetwen_points(xx, yy)
+        new_x = p1[0] + (p2[0] - p1[0]) / 2
+        new_y = p1[1] + (p2[1] - p1[1]) / 2
+        xx = np.hstack((xx[: index + 1], [new_x], xx[index + 1 :]))  #!
+        yy = np.hstack((yy[: index + 1], [new_y], yy[index + 1 :]))  #!
+    return xx, yy
