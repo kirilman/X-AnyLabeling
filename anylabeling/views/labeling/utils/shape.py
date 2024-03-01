@@ -4,6 +4,7 @@ import uuid
 import numpy as np
 import PIL.Image
 import PIL.ImageDraw
+from skimage.measure import EllipseModel
 
 from ..logger import logger
 
@@ -126,3 +127,43 @@ def max_distance(x_coords, y_coords):
         y_coords[:, np.newaxis] - y_coords
     ) ** 2
     return np.sqrt(r.max())
+
+
+def distance_point(p1, p2):
+    x0 = p1[0] - p2[0]
+    y0 = p1[1] - p2[1]
+    return np.sqrt(x0**2 + y0**2)
+
+
+def neighbour_point(point, x_coords, y_coords):
+    d_min = 10**9
+    neighbour = (0, 0)
+    for x, y in zip(x_coords, y_coords):
+        d = distance_point(point, (x, y))
+        if d < d_min:
+            d_min = d
+            neighbour = (x, y)
+    return neighbour
+
+class Polygone:
+    def __init__(self, x, y):
+        self.x = np.array(x)
+        self.y = np.array(y)
+    @property    
+    def center_x(self):
+        return np.mean(self.x)
+    @property    
+    def center_y(self):
+        return np.mean(self.y)
+    @property    
+    def distance(self):
+        return np.sqrt(self.center_x**2 + self.center_y**2)
+    def __lt__(self, other):
+        return self.distance < other.distance
+    
+
+def ellipse_parameters(x, y):
+    a_points = np.array([x, y]).T
+    ell = EllipseModel()
+    ell.estimate(a_points)
+    return ell.params

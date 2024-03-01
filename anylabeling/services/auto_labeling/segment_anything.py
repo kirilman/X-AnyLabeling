@@ -12,7 +12,12 @@ from anylabeling.app_info import __preferred_device__
 from anylabeling.utils import GenericWorker
 from anylabeling.views.labeling.shape import Shape
 from anylabeling.views.labeling.utils.opencv import qt_img_to_rgb_cv_img
-
+from anylabeling.views.labeling.utils.shape import (
+    neighbour_point,
+    ellipse_parameters,
+    Polygone,
+    distance_point,
+)
 from .lru_cache import LRUCache
 from .model import Model
 from .types import AutoLabelingResult
@@ -20,6 +25,9 @@ from .sam_onnx import SegmentAnythingONNX
 from .__base__.clip import ChineseClipONNX
 
 from segment_anything import sam_model_registry, SamAutomaticMaskGenerator
+from asbestutills.utils.geometry import add_points_to_polygone
+from shapely import Polygon as ShapelyPolygone
+import polygone_nms
 
 
 class SegmentAnything(Model):
@@ -333,25 +341,27 @@ class SegmentAnythingAll(Model):
         sam.to("cuda")
         self.model = SamAutomaticMaskGenerator(
             model=sam,
-            pred_iou_thresh=0.95,
-            points_per_side=48,
+            pred_iou_thresh=0.5,
+            points_per_side=32,
             # pred_iou_thresh=0.9,
-            stability_score_thresh=0.9,
+            stability_score_thresh=0.92,
             # crop_n_layers=1,
             crop_overlap_ratio=0.9,
             # crop_n_points_downscale_factor=2,
             # min_mask_region_area=20000,  # Requires open-cv to run post-processing
         )
         print("create model")
-    
+
     def to4image(self, image):
         h, w, c = image.shape
         dy = int(h / 2)
         dx = int(w / 2)
-        parts = {'0': {'image': image[:dy, :dx], 'dx':  0, 'dy': 0},
-                 '1': {'image': image[:dy, dx:], 'dx': dx, 'dy': 0},
-                 '2': {'image': image[dy:, :dx], 'dx': 0,  'dy': dy},
-                 '3': {'image': image[dy:, dx:], 'dx': dx, 'dy': dy}}
+        parts = {
+            "0": {"image": image[:dy, :dx], "dx": 0, "dy": 0},
+            "1": {"image": image[:dy, dx:], "dx": dx, "dy": 0},
+            "2": {"image": image[dy:, :dx], "dx": 0, "dy": dy},
+            "3": {"image": image[dy:, dx:], "dx": dx, "dy": dy},
+        }
         return parts
 
     def predict_shapes(self, image, filename=None) -> AutoLabelingResult:
@@ -369,21 +379,29 @@ class SegmentAnythingAll(Model):
         shapes = []
         parhs = self.to4image(cv_image)
         for name, path in parhs.items():
-            cur_image = path['image']
+            cur_image = path["image"]
             print(cur_image.shape)
             scale_x = self.input_size[0] / cur_image.shape[0]
             scale_y = self.input_size[1] / cur_image.shape[1]
             scale = min(scale_x, scale_y)
 
             transform_matrix = np.array(
-                [[scale, 0, 0],
-                 [0, scale, 0],
-                 [0, 0, 1],])
-            
-            cur_image = cv2.warpAffine(cur_image, transform_matrix[:2], (self.input_size[1], self.input_size[0]), flags=cv2.INTER_LINEAR,)
+                [
+                    [scale, 0, 0],
+                    [0, scale, 0],
+                    [0, 0, 1],
+                ]
+            )
+
+            cur_image = cv2.warpAffine(
+                cur_image,
+                transform_matrix[:2],
+                (self.input_size[1], self.input_size[0]),
+                flags=cv2.INTER_LINEAR,
+            )
             masks = self.model.generate(cur_image)
             cv2.imwrite("test.jpeg", cur_image)
-            shape = self.post_process(masks, scale, path['dx'], path['dy'])
+            shape = self.post_process(masks, scale, path["dx"], path["dy"])
             filtered = self.filter_shapes(shape)
             shapes = shapes + filtered
 
@@ -397,11 +415,86 @@ class SegmentAnythingAll(Model):
 
     def filter_shapes(self, shapes):
         rs = np.array([s.maxsize for s in shapes])
-        q_min = np.quantile(rs, 0.02)
-        q_max = np.quantile(rs, 0.98)
-        filtered = [s for s in shapes if q_min < s.maxsize < q_max and len(s.points) > 5]
-        return filtered
+        q_min = np.quantile(rs, 0.06)
+        q_max = np.quantile(rs, 0.96)
+        filtered = [
+            s
+            for s in shapes
+            if q_min < s.maxsize < q_max and len(s.points) > 5
+        ]
 
+        if len(shapes) > 100:
+            polygones = []
+            for shape in shapes:
+                xx = [p.x() for p in shape.points]
+                yy = [p.y() for p in shape.points]
+                polygones.append(Polygone(xx, yy))
+
+            t = np.linspace(0, 2 * np.pi, 70)
+            diff_vars = []
+            for p in polygones:
+                try:
+                    if len(p.x) < 10:
+                        continue
+                    xc, yc, a, b, theta = ellipse_parameters(p.x, p.y)
+                    x_ell = xc + a * np.cos(t)
+                    y_ell = yc + b * np.sin(t)
+                    dists = []
+                    for xn, yn in zip(x_ell, y_ell):
+                        neighbour = neighbour_point((xn, yn), p.x, p.y)
+                        dists.append(distance_point((xn, yn), neighbour))
+                    diff_vars.append(np.var(dists))
+                except:
+                    diff_vars.append(0)
+
+            thresh = np.quantile(diff_vars, 0.92)
+
+            max_points = max([2 * len(shape.points) for shape in shapes])
+            ans_polygones = []
+            for p in polygones:
+                if len(p.x) > 6:
+                    xx = p.x
+                    yy = p.y
+                    xx, yy = add_points_to_polygone(
+                        xx, yy, max_points - len(xx)
+                    )
+                    new_p = Polygone(xx, yy)
+                    ans_polygones.append(new_p)
+
+            indexs = []
+            for k, pol_1 in enumerate(ans_polygones):
+                p1 = ShapelyPolygone(np.array([pol_1.x, pol_1.y]).T)
+                try:
+                    p1.intersection(p1)
+                    indexs += [k]
+                except:
+                    pass
+
+            polys = []
+            for k, p in enumerate(ans_polygones):
+                if k in indexs:
+                    ans = np.zeros(len(p.x) * 2 + 2)
+                    xx = p.x
+                    yy = p.y
+                    if (max(xx) - min(xx)) * (max(yy) - min(yy)) > 200:
+                        for i, (x, y) in enumerate(zip(p.x, p.y)):
+                            ans[2 * i] = x
+                            ans[2 * i + 1] = y
+                        ans[-1] = 0.99
+                        ans[-2] = 1.0
+                        polys.append(ans)
+
+            polys = np.array(polys)
+            indexs = polygone_nms.nms(
+                polys,
+                thresh=0.8,
+            )
+
+            filtered = [
+                s for i, s in enumerate(shapes) if diff_vars[i] < thresh
+            ]
+
+        return filtered
 
     def post_process(self, masks, scale, dx, dy):
         areas = np.array([x["area"] for x in masks])
@@ -421,16 +514,16 @@ class SegmentAnythingAll(Model):
 
             approx_contours = []
             # Approximate contour
-            epsilon = 0.002 * cv2.arcLength(contours[0], True)
+            epsilon = 0.0015 * cv2.arcLength(contours[0], True)
             approx = cv2.approxPolyDP(contours[0], epsilon, True)
             # Remove too big contours ( >90% of image size)
-            if cv2.contourArea(approx) > image_area * 0.6:
+            if cv2.contourArea(approx) > image_area * 0.7:
                 print(cv2.contourArea(approx), image_area)
                 continue
-            
+
             points = approx.reshape(-1, 2) / scale
-            points[:,0] += dx
-            points[:,1] += dy
+            points[:, 0] += dx
+            points[:, 1] += dy
             # Create shape
             shape = Shape(flags={})
             for point in points:
@@ -446,3 +539,6 @@ class SegmentAnythingAll(Model):
             shape.selected = False
             shapes.append(shape)
         return shapes
+
+    def merge_parths(self):
+        pass
